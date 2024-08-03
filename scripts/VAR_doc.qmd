@@ -1,0 +1,254 @@
+---
+title: "Bayesian Vector Autoregressive Models in Stan"
+subtitle: s
+format: html
+pagetitle: s
+date: 2024-7-31
+description: s
+categories: []
+---
+
+
+
+```{python}
+import arviz as az
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from cmdstanpy import CmdStanModel, cmdstan_path, set_cmdstan_path
+
+RANDOM_SEED = 123
+rng = np.random.default_rng(RANDOM_SEED)
+az.style.use("arviz-darkgrid")
+
+c_light = "#DCBCBC"
+c_dark = "#8F2727"
+
+current_working_directory = 'C:\\Users\\issam_biodcm6\\Documents\\Bayesian_VAR\\'
+p_dir = os.path.dirname(current_working_directory)
+```
+
+```{python}
+
+def simulate_var(
+    intercepts, coefs_yy, coefs_xy, coefs_xx, coefs_yx, noises=(1, 1), *, warmup=100, steps=200
+):
+    draws_y = np.zeros(warmup + steps)
+    draws_x = np.zeros(warmup + steps)
+    draws_y[:2] = intercepts[0]
+    draws_x[:2] = intercepts[1]
+    for step in range(2, warmup + steps):
+        draws_y[step] = (
+            intercepts[0]
+            + coefs_yy[0] * draws_y[step - 1]
+            + coefs_yy[1] * draws_y[step - 2]
+            + coefs_xy[0] * draws_x[step - 1]
+            + coefs_xy[1] * draws_x[step - 2]
+            + rng.normal(0, noises[0])
+        )
+        draws_x[step] = (
+            intercepts[1]
+            + coefs_xx[0] * draws_x[step - 1]
+            + coefs_xx[1] * draws_x[step - 2]
+            + coefs_yx[0] * draws_y[step - 1]
+            + coefs_yx[1] * draws_y[step - 2]
+            + rng.normal(0, noises[1])
+        )
+    return draws_y[warmup:], draws_x[warmup:]
+```
+
+```{python}
+
+var_y, var_x = simulate_var(
+    intercepts=(18, 8),
+    coefs_yy=(-0.8, 0),
+    coefs_xy=(0.9, 0),
+    coefs_xx=(1.3, -0.7),
+    coefs_yx=(-0.1, 0.3),
+)
+
+df = pd.DataFrame({"x": var_x, "y": var_y})
+df.head()
+```
+
+```{python}
+
+fig, axs = plt.subplots(2, 1, figsize=(10, 3))
+axs[0].plot(df["x"], label="x", color=c_dark)
+axs[0].set_title("Series X")
+axs[1].plot(df["y"], label="y", color=c_dark)
+axs[1].set_title("Series Y")
+```
+
+# Specify DataFrame For VAR
+
+```{python}
+n_lags = 3
+n_eqs = 2
+
+stan_data_1 = {
+    'T': df.shape[0],
+    'n_eqs': n_eqs,
+    'n_lags': n_lags,
+    'n_cross_vars': n_eqs,
+    'isChol': 1,
+
+    'lag_coef_mu': 0.3,
+    'lag_coef_sigma': 1,
+    'alpha_mu': 15,
+    'alpha_sigma': 5,
+    'noise_chol_eta': 1,
+    'noise_chol_sigma': 1,
+    'noise_sigma': 1,
+
+    'y': df
+}
+
+current_directory = os.getcwd()
+model_path_1 = os.path.join(p_dir, 'models', 'var_1.stan')
+stan_model_1 = CmdStanModel(stan_file=model_path_1)
+```
+
+```{python}
+# Fit model
+fit_1 = stan_model_1.sample(data=stan_data_1, seed=RANDOM_SEED, chains=4, iter_sampling=2000, iter_warmup=1000, show_console=True)
+```
+
+```{python}
+print(fit_1.summary())
+print(fit_1.diagnose())
+```
+
+```{python}
+idata_1 = az.from_cmdstanpy(posterior=fit_1,
+                            constant_data={'T': stan_data_1['T']},
+                            )
+
+az.summary(idata_1, var_names=["alpha", "lag_coefs", "L_corr"])
+
+ax = az.plot_posterior(
+    idata_1,
+    var_names="L_corr",
+    hdi_prob="hide",
+    group="posterior",
+    point_estimate="mean",
+    grid=(2, 2),
+    kind="hist",
+    ec="black",
+    figsize=(10, 4),
+)
+
+az.plot_posterior(idata_1, var_names=["alpha"], ref_val=[8, 18])
+```
+
+# Nowe We Fit With 2 Lags
+```{python}
+n_lags = 2
+n_eqs = 2
+
+stan_data_2 = {
+    'T': df.shape[0],
+    'n_eqs': n_eqs,
+    'n_lags': n_lags,
+    'n_cross_vars': n_eqs,
+    'isChol': 1,
+
+    'lag_coef_mu': 0.3,
+    'lag_coef_sigma': 1,
+    'alpha_mu': 15,
+    'alpha_sigma': 5,
+    'noise_chol_eta': 1,
+    'noise_chol_sigma': 1,
+    'noise_sigma': 1,
+
+    'y': df
+}
+
+fit_2 = stan_model_1.sample(data=stan_data_2, seed=RANDOM_SEED, chains=4, iter_sampling=2000, iter_warmup=1000, show_console=True)
+fit_2.stan_variables()
+```
+
+```{python}
+idata_2 = az.from_cmdstanpy(posterior=fit_2,
+                            posterior_predictive='y_pred',
+                            observed_data={'y': stan_data_2['y']},
+                            constant_data={'y': stan_data_2['y'],
+                                            'T': stan_data_2['T'],
+                                            },
+                            )
+az.plot_posterior(idata_2, var_names=["alpha"], ref_val=[8, 18])
+idata_2
+fit_2.stan_variables()
+```
+
+```{python}
+def shade_background(ppc, ax, idx, palette="cividis"):
+    palette = palette
+    cmap = plt.get_cmap(palette)
+    percs = np.linspace(51, 99, 100)
+    colors = (percs - np.min(percs)) / (np.max(percs) - np.min(percs))
+    for i, p in enumerate(percs[::-1]):
+        upper = np.percentile(
+            ppc[:, idx, :],
+            p,
+            axis=1,
+        )
+        lower = np.percentile(
+            ppc[:, idx, :],
+            100 - p,
+            axis=1,
+        )
+        color_val = colors[i]
+        ax[idx].fill_between(
+            x=np.arange(ppc.shape[0]),
+            y1=upper.flatten(),
+            y2=lower.flatten(),
+            color=cmap(color_val),
+            alpha=0.1,
+        )
+
+
+def plot_ppc(idata, df, group="posterior_predictive"):
+    fig, axs = plt.subplots(2, 1, figsize=(25, 15))
+    df = pd.DataFrame(idata["observed_data"]["y"].data, columns=["x", "y"])
+    axs = axs.flatten()
+    ppc = az.extract(idata, group=group, num_samples=100)["y_pred"]
+    # Minus the lagged terms and the constant
+    shade_background(ppc, axs, 0, "inferno")
+
+    axs[0].plot(np.arange(ppc.shape[0]), ppc[:, 0, :].mean(axis=1), color="cyan", label="Mean")
+    axs[0].plot(df["x"], "o", mfc="black", mec="white", mew=1, markersize=7, label="Observed")
+    axs[0].set_title("VAR Series 1")
+    axs[0].legend()
+    shade_background(ppc, axs, 1, "inferno")
+
+    axs[1].plot(df["y"], "o", mfc="black", mec="white", mew=1, markersize=7, label="Observed")
+    axs[1].plot(np.arange(ppc.shape[0]), ppc[:, 1, :].mean(axis=1), color="cyan", label="Mean")
+    axs[1].set_title("VAR Series 2")
+    axs[1].legend()
+
+
+plot_ppc(idata_2, df)
+```
+
+
+```{python}
+ax = az.plot_posterior(
+    idata_2,
+    var_names="L_corr",
+    hdi_prob="hide",
+    point_estimate="mean",
+    grid=(2, 2),
+    kind="hist",
+    ec="black",
+    figsize=(10, 6),
+)
+
+```
+
+```{python}
+
+
+
+```
