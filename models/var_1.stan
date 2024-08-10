@@ -17,7 +17,6 @@ data {
     real<lower=0> noise_sigma;
     
     matrix[T, n_eqs] y;
-    
 }
 
 transformed data {
@@ -48,7 +47,6 @@ transformed parameters {
             mean[t, j] = alpha[j] + beta[t, j];
         }
     }
-
 }
 
 model {

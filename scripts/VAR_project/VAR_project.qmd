@@ -386,23 +386,95 @@ az.plot_posterior(
 # Hierarchical VARs ingratiate
 
 ```{python}
+df_final = gdp_hierarchical[["country", "dl_gdp", "dl_cons", "dl_gfcf"]]
 
-stan_data_3 = {
-    'T': ireland_df.shape[0],
+# Code countries to integers
+df_final['country_code'], unique_countries = pd.factorize(df_final['country'])
+print(df_final)
+print("Unique countries:", len(unique_countries))
+print(df_final[['country_code', 'dl_gdp', 'dl_cons', 'dl_gfcf']])
+```
+
+
+```{python}
+n_lags = 2
+n_eqs = 3
+
+country_groups = df_final.groupby('country_code')
+
+# Create a list of matrices, one for each country group
+Y_list = [group[['dl_gdp', 'dl_cons', 'dl_gfcf']].values for _, group in country_groups]
+
+# Calculate T and n_groups for Stan
+T_list = [matrix.shape[0] for matrix in Y_list]  # List of T values for each group
+n_groups = len(Y_list)
+
+# Pad the matrices to make them the same size if needed (useful for Stan)
+T_max = max(T_list)
+Y_padded = [np.pad(matrix, ((0, T_max - matrix.shape[0]), (0, 0)), mode='constant', constant_values=0)
+            for matrix in Y_list]
+
+# Stack the padded matrices into a 3D array
+Y = np.stack(Y_padded)
+
+stan_data_4 = {
+    'T': T_max,
+    'n_groups': len(df_final['country_code'].unique()),
     'n_eqs': n_eqs,
     'n_lags': n_lags,
     'n_cross_vars': n_eqs,
-    'isChol': 1,
 
-    'lag_coef_mu': 0.3,
-    'lag_coef_sigma': 1,
-    'alpha_mu': 0,
-    'alpha_sigma': 0.1,
-    'noise_chol_eta': 1,
-    'noise_chol_sigma': 1,
-    'noise_sigma': 1,
+    # Hierarchical priors
+    'rho_alpha': 2,
+    'rho_beta': 2,
+    'alpha_hat_location_mu': 0,
+    'alpha_hat_location_sigma': 0.1,
+    'alpha_hat_scale_mu': 3,
+    'alpha_hat_scale_sigma': 0.5,
+    'beta_hat_location_mu': 0,
+    'beta_hat_location_sigma': 0.1,
+    'beta_hat_scale_mu': 3,
+    'beta_hat_scale_sigma': 0.5,
+    'omega_eta': 1.0,
+    'omega_sigma_exponential': 1.0,
 
-    'y': ireland_df[["dl_gdp", "dl_cons"]]
+    # Priors
+    'z_scale_beta_mu': 3,
+    'z_scale_beta_sigma': 0.5,
+    'z_scale_alpha_mu': 3,
+    'z_scale_alpha_sigma': 0.5,
+    'noise_chol_eta': 10,
+    'noise_chol_sigma_exponential': 1,
+
+    'Y': Y,
 }
 
+```
+
+```{python}
+current_directory = os.getcwd()
+model_path_2 = os.path.join(p_dir, 'models', 'var_3.stan')
+stan_model_2 = CmdStanModel(stan_file=model_path_2)
+```
+
+```{python}
+# Fit model
+fit_4 = stan_model_2.sample(data=stan_data_4, seed=RANDOM_SEED, chains=4, iter_sampling=2000, iter_warmup=1000, show_console=True)
+
+```
+
+```{python}
+print(fit_4.summary())
+
+```
+
+```{python}
+idata_4 = az.from_cmdstanpy(posterior=fit_4,
+                            posterior_predictive='Y_rep',
+                            )
+az.plot_trace(
+    idata_4,
+    var_names=["rho", "alpha_hat_location", "beta_hat_location", "L_Omega_global"],
+    kind="rank_vlines",
+);                            
 ```
